@@ -26,7 +26,7 @@ import (
 
 // MyAppResourceSpec defines the desired state of MyAppResource
 type MyAppResourceSpec struct {
-	ReplicaCount int32 `json:"replica_count,omitempty"`
+	ReplicaCount int32 `json:"replicaCount,omitempty"`
 	// could use a resource list here
 	Resources Resources        `json:"resources,omitempty"`
 	Image     MyAppImage       `json:"image,omitempty"`
@@ -35,8 +35,8 @@ type MyAppResourceSpec struct {
 }
 
 type Resources struct {
-	MemoryLimit resource.Quantity `json:"memory_limit,omitempty"`
-	CPURequest  resource.Quantity `json:"cpu_request,omitempty"`
+	MemoryLimit resource.Quantity `json:"memoryLimit,omitempty"`
+	CPURequest  resource.Quantity `json:"cpuRequest,omitempty"`
 }
 
 type MyAppImage struct {
