@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -44,7 +45,8 @@ type MyAppResourceReconciler struct {
 
 //+kubebuilder:rbac:groups=myapp.example.com,resources=myappresources,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=myapp.example.com,resources=myappresources/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=myapp.example.com,resources=myappresources/finalizers,verbs=update
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch
 
 func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("name", req.Name, "namespace", req.Namespace)
@@ -55,19 +57,55 @@ func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Build the desired Deployment and apply it to the cluster using server side apply
-	desiredService := buildService(&myApp)
-	desiredDeployment := buildDeployment(&myApp)
-
-	if err := r.Apply(ctx, desiredService); err != nil {
+	redisSvcLookupKey := types.NamespacedName{
+		Name:      myApp.Name + "-redis",
+		Namespace: myApp.Namespace,
+	}
+	var currentRedisSvc corev1.Service
+	if err := r.Get(ctx, redisSvcLookupKey, &currentRedisSvc); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.Apply(ctx, desiredDeployment); err != nil {
-		return ctrl.Result{}, err
+	// If redis is enabled, create a redis service and deployment
+	desiredRedis := buildRedis(&myApp)
+	desiredRedisSvc := buildRedisService(&myApp)
+	if myApp.Spec.Redis.Enabled {
+		if err := r.Apply(ctx, desiredRedis); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to apply service: %w", err)
+		}
+
+		if err := r.Apply(ctx, desiredRedisSvc); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to apply service: %w", err)
+		}
+	} else {
+		if err := r.Delete(ctx, desiredRedisSvc); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete redis service: %w", err)
+		}
+
+		if err := r.Delete(ctx, desiredRedis); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete redis deployment: %w", err)
+		}
 	}
 
-	log.Info("finished reconcile")
+	// If redis is enabled we need the service ready to build the
+	// podinfo deployment. So, if the cluster IP is empty, requeue and try
+	// again later.
+	// Otherwise, create the deployment and service using the config in the
+	// CR.
+	if myApp.Spec.Redis.Enabled && currentRedisSvc.Spec.ClusterIP == "" {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	desiredPodInfo := buildPodInfo(&myApp, currentRedisSvc.Spec.ClusterIP)
+	if err := r.Apply(ctx, desiredPodInfo); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to apply deployment: %w", err)
+	}
+
+	desiredPodInfoSvc := buildPodInfoService(&myApp)
+	if err := r.Apply(ctx, desiredPodInfoSvc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to apply service: %w", err)
+	}
+
+	log.Info("finished reconcile successfully")
 
 	return ctrl.Result{}, nil
 }
@@ -77,6 +115,7 @@ func (r *MyAppResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&myappv1alpha1.MyAppResource{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(MyAppLabelPredicate)).
+		Owns(&corev1.Service{}, builder.WithPredicates(MyAppLabelPredicate)).
 		Complete(r)
 }
 
@@ -90,17 +129,107 @@ func (r *MyAppResourceReconciler) Apply(ctx context.Context, obj client.Object, 
 	)
 }
 
-func buildService(myAppRec *myappv1alpha1.MyAppResource) *corev1.Service {
+func buildRedis(myAppRec *myappv1alpha1.MyAppResource) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Deployment",
+			APIVersion: appsv1.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "redis",
+			Namespace: myAppRec.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion:         myAppRec.APIVersion,
+				Kind:               myAppRec.Kind,
+				Name:               myAppRec.Name,
+				UID:                myAppRec.UID,
+				Controller:         pointer.Bool(true),
+				BlockOwnerDeletion: pointer.Bool(true),
+			}},
+			Labels: map[string]string{
+				wdk.App: wdk.MyApp,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: pointer.Int32(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					wdk.App: "redis",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						wdk.App: "redis",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "redis",
+							Image: "redis:latest",
+							Command: []string{
+								"redis-server",
+								"/redis-master/redis.conf",
+							},
+							Ports: []corev1.ContainerPort{{
+								ContainerPort: 6379,
+							}},
+							Env: []corev1.EnvVar{{
+								Name:  "MASTER",
+								Value: "true",
+							}},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "data",
+									MountPath: "/redis-master-data",
+								},
+								{
+									Name:      "config",
+									MountPath: "/redis-master",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "data",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "redis-conf",
+									},
+									Items: []corev1.KeyToPath{{
+										Key:  "conf",
+										Path: "redis.conf",
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func buildRedisService(myAppRec *myappv1alpha1.MyAppResource) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Service",
 			APIVersion: corev1.SchemeGroupVersion.Version,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: myAppRec.Name,
-			Namespace:    myAppRec.Namespace,
+			Name:      myAppRec.Name + "-redis",
+			Namespace: myAppRec.Namespace,
 			Labels: map[string]string{
-				wdk.MyApp: myAppRec.Name,
+				wdk.App: wdk.MyApp,
 			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         myAppRec.APIVersion,
@@ -113,24 +242,60 @@ func buildService(myAppRec *myappv1alpha1.MyAppResource) *corev1.Service {
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-				wdk.MyApp: myAppRec.Name,
+				wdk.App: "redis",
 			},
 			Ports: []corev1.ServicePort{{
-				Name:       "http",
-				Protocol:   corev1.ProtocolTCP,
-				Port:       80,
-				TargetPort: intstr.FromInt(80),
+				Port:       6379,
+				TargetPort: intstr.FromInt(6379),
 			}},
 			Type: corev1.ServiceTypeClusterIP,
 		},
 	}
 }
 
-func buildDeployment(myAppRec *myappv1alpha1.MyAppResource) *appsv1.Deployment {
-	return &appsv1.Deployment{
+func buildPodInfoService(myAppRec *myappv1alpha1.MyAppResource) *corev1.Service {
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Service",
+			APIVersion: corev1.SchemeGroupVersion.Version,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      myAppRec.Name,
+			Namespace: myAppRec.Namespace,
+			Labels: map[string]string{
+				wdk.App: wdk.MyApp,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion:         myAppRec.APIVersion,
+				Kind:               myAppRec.Kind,
+				Name:               myAppRec.Name,
+				UID:                myAppRec.UID,
+				Controller:         pointer.Bool(true),
+				BlockOwnerDeletion: pointer.Bool(true),
+			}},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				wdk.App: wdk.MyApp,
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       8080,
+					TargetPort: intstr.FromString("http"),
+				},
+			},
+			Type: corev1.ServiceTypeClusterIP,
+		},
+	}
+}
+
+func buildPodInfo(myAppRec *myappv1alpha1.MyAppResource, redisIP string) *appsv1.Deployment {
+	deploy := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Deployment",
-			APIVersion: appsv1.SchemeGroupVersion.Version,
+			APIVersion: appsv1.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      myAppRec.Name,
@@ -144,55 +309,74 @@ func buildDeployment(myAppRec *myappv1alpha1.MyAppResource) *appsv1.Deployment {
 				BlockOwnerDeletion: pointer.Bool(true),
 			}},
 			Labels: map[string]string{
-				wdk.MyApp: myAppRec.Name,
+				wdk.App: wdk.MyApp,
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: pointer.Int32(myAppRec.Spec.ReplicaCount),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					wdk.MyApp: myAppRec.Name,
+					wdk.App: wdk.MyApp,
 				},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						wdk.MyApp: myAppRec.Name,
+						wdk.App: wdk.MyApp,
 					},
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:  "my-app",
-						Image: fmt.Sprintf("%s:%s", myAppRec.Spec.Image.Repository, myAppRec.Spec.Image.Tag),
-						// Args:  []string{},
-						// Ports: []corev1.ContainerPort{},
-						Env: []corev1.EnvVar{
-							{
-								Name:  wdk.PODINFO_CACHE_SERVER,
-								Value: "localhost",
+					Containers: []corev1.Container{
+						{
+							Name:  "podinfo",
+							Image: fmt.Sprintf("%s:%s", myAppRec.Spec.Image.Repository, myAppRec.Spec.Image.Tag),
+							Command: []string{
+								"./podinfo",
+								"--port=8080",
 							},
-							{
-								Name:  wdk.PODINFO_UI_COLOR,
-								Value: myAppRec.Spec.UI.Color,
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "http",
+									ContainerPort: 8080,
+									Protocol:      corev1.ProtocolTCP,
+								},
 							},
-							{
-								Name:  wdk.PODINFO_UI_MESSAGE,
-								Value: myAppRec.Spec.UI.Message,
+							Env: []corev1.EnvVar{
+								{
+									Name:  wdk.PODINFO_UI_COLOR,
+									Value: myAppRec.Spec.UI.Color,
+								},
+								{
+									Name:  wdk.PODINFO_UI_MESSAGE,
+									Value: myAppRec.Spec.UI.Message,
+								},
 							},
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: myAppRec.Spec.Resources.MemoryLimit,
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU: myAppRec.Spec.Resources.CPURequest,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{},
 						},
-						Resources: corev1.ResourceRequirements{
-							Limits: corev1.ResourceList{
-								corev1.ResourceMemory: myAppRec.Spec.Resources.MemoryLimit,
-							},
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU: myAppRec.Spec.Resources.CPURequest,
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{},
-					}},
+					},
 					Volumes: []corev1.Volume{},
 				},
 			},
 		},
 	}
+
+	if redisIP != "" {
+		deploy.Spec.Template.Spec.Containers[0].Env = append(
+			deploy.Spec.Template.Spec.Containers[0].Env,
+			corev1.EnvVar{
+				Name:  wdk.PODINFO_CACHE_SERVER,
+				Value: "tcp://" + redisIP + ":6379",
+			},
+		)
+	}
+
+	return deploy
 }
