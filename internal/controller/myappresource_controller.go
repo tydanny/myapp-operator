@@ -58,7 +58,7 @@ func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Fetch the resources needed to reach the desired state and
-	// update the status of the CR
+	// update the status of the CR.
 	podInfoLookupKey := types.NamespacedName{
 		Name:      "podinfo",
 		Namespace: req.Namespace,
@@ -88,12 +88,16 @@ func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	myApp.Status.Conditions.RedisConditions = currentRedis.Status.Conditions
 
 	// If the status update failes we don't want to block reconciliation,
-	// so instead log the error and continue on
+	// so instead log the error and continue on.
 	if err := r.Status().Update(ctx, &myApp); err != nil {
 		log.Error(err, "failed to update status")
 	}
 
-	// If redis is enabled, create a redis service and deployment
+	// The following code progesses the current cluster state towards the
+	// desired cluster state.
+
+	// If redis is enabled, create a redis service and deployment.
+	// Otherwise, ensure that there is not redis service/deployment.
 	desiredRedis := buildRedis(&myApp)
 	desiredRedisSvc := buildRedisService(&myApp)
 	if myApp.Spec.Redis.Enabled {
@@ -117,7 +121,7 @@ func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// If redis is enabled we need the service ready to build the
 	// podinfo deployment. So, if the cluster IP is empty, requeue and try
 	// again later.
-	// Otherwise, create the deployment and service using the config in the
+	// Otherwise, create the deployment/service using the config specified in the
 	// CR.
 	if myApp.Spec.Redis.Enabled && currentRedisSvc.Spec.ClusterIP == "" {
 		return ctrl.Result{Requeue: true}, nil
@@ -395,6 +399,9 @@ func buildPodInfo(myAppRec *myappv1alpha1.MyAppResource, redisIP string) *appsv1
 		},
 	}
 
+	// If the redis IP is not empty add the corresponding environment variable.
+	// If it is an empty string then redis is not enabled and the environement variable
+	// can be omitted.
 	if redisIP != "" {
 		deploy.Spec.Template.Spec.Containers[0].Env = append(
 			deploy.Spec.Template.Spec.Containers[0].Env,
