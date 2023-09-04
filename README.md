@@ -44,6 +44,19 @@ Run the following command to create the sample resource as well as a namepsace.
 make sample
 ```
 
+### Connecting to the pod info endpoint
+Run the following command to setup a port forward to the pod info API
+```sh
+kubectl port-forward service/podinfo 8080:8080 -n myapp
+```
+
+>**Note:** The command above assumes you're using the sample namespace `myapp`
+
+You should now be able to hit the pod info endpoint(s) in another terminal. For example:
+```sh
+curl localhost:8080/
+```
+
 ### Uninstall CRDs
 To delete the CRDs from the cluster:
 
