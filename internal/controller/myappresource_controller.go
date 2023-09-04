@@ -57,13 +57,40 @@ func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	redisSvcLookupKey := types.NamespacedName{
+	// Fetch the resources needed to reach the desired state and
+	// update the status of the CR
+	podInfoLookupKey := types.NamespacedName{
+		Name:      "podinfo",
+		Namespace: req.Namespace,
+	}
+	var currentPodInfo appsv1.Deployment
+	if err := r.Get(ctx, podInfoLookupKey, &currentPodInfo); client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, err
+	}
+
+	redisLookupKey := types.NamespacedName{
 		Name:      "redis",
 		Namespace: myApp.Namespace,
 	}
-	var currentRedisSvc corev1.Service
-	if err := r.Get(ctx, redisSvcLookupKey, &currentRedisSvc); client.IgnoreNotFound(err) != nil {
+	var currentRedis appsv1.Deployment
+	if err := r.Get(ctx, redisLookupKey, &currentRedis); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, err
+	}
+
+	var currentRedisSvc corev1.Service
+	if err := r.Get(ctx, redisLookupKey, &currentRedisSvc); client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update the status of the CR
+	myApp.Status.AvailableReplicas = currentPodInfo.Status.AvailableReplicas
+	myApp.Status.Conditions.PodInfoConditions = currentPodInfo.Status.Conditions
+	myApp.Status.Conditions.RedisConditions = currentRedis.Status.Conditions
+
+	// If the status update failes we don't want to block reconciliation,
+	// so instead log the error and continue on
+	if err := r.Status().Update(ctx, &myApp); err != nil {
+		log.Error(err, "failed to update status")
 	}
 
 	// If redis is enabled, create a redis service and deployment
@@ -260,7 +287,7 @@ func buildPodInfoService(myAppRec *myappv1alpha1.MyAppResource) *corev1.Service 
 			APIVersion: corev1.SchemeGroupVersion.Version,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      myAppRec.Name,
+			Name:      "podinfo",
 			Namespace: myAppRec.Namespace,
 			Labels: map[string]string{
 				wdk.App: wdk.MyApp,
@@ -298,7 +325,7 @@ func buildPodInfo(myAppRec *myappv1alpha1.MyAppResource, redisIP string) *appsv1
 			APIVersion: appsv1.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      myAppRec.Name,
+			Name:      "podinfo",
 			Namespace: myAppRec.Namespace,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         myAppRec.APIVersion,

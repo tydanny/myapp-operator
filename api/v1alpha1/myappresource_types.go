@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -60,10 +61,21 @@ type MyAppRedisConfig struct {
 }
 
 // MyAppResourceStatus defines the observed state of MyAppResource
-type MyAppResourceStatus struct{}
+type MyAppResourceStatus struct {
+	AvailableReplicas int32           `json:"available_replicas,omitempty"`
+	Conditions        MyAppConditions `json:"conditions,omitempty"`
+}
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+type MyAppConditions struct {
+	PodInfoConditions []appsv1.DeploymentCondition `json:"pod_info_conditions,omitempty"`
+	RedisConditions   []appsv1.DeploymentCondition `json:"redis_conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:validation:Required
+// +kubebuilder:printcolumn:name="Pods Available",type="integer",JSONPath=".status.available_replicas",priority=0
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",priority=0
 
 // MyAppResource is the Schema for the myappresources API
 type MyAppResource struct {

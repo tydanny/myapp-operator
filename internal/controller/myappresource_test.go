@@ -69,14 +69,14 @@ var _ = Describe("Internal/Controller/Myappresource", func() {
 
 			Expect(k8sClient.Create(ctx, myapprec)).To(Succeed())
 
-			myAppLookupKey := types.NamespacedName{
-				Name:      MyAppResourceName,
+			podInfoLookupKey := types.NamespacedName{
+				Name:      "podinfo",
 				Namespace: MyAppResourceNamespace,
 			}
 			createdPodInfo := &appsv1.Deployment{}
 
 			Eventually(ctx, func() error {
-				if err := k8sClient.Get(ctx, myAppLookupKey, createdPodInfo); err != nil {
+				if err := k8sClient.Get(ctx, podInfoLookupKey, createdPodInfo); err != nil {
 					return err
 				}
 				return nil
@@ -106,7 +106,7 @@ var _ = Describe("Internal/Controller/Myappresource", func() {
 			By("Checking the pod info service was created")
 			Eventually(ctx, func() error {
 				var createdPodInfoSvc corev1.Service
-				return k8sClient.Get(ctx, myAppLookupKey, &createdPodInfoSvc)
+				return k8sClient.Get(ctx, podInfoLookupKey, &createdPodInfoSvc)
 			}).Should(Succeed())
 
 			By("Checking the redis deployment was created")
