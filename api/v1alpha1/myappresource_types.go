@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -42,6 +44,10 @@ type Resources struct {
 type MyAppImage struct {
 	Repository string `json:"repository,omitempty"`
 	Tag        string `json:"tag,omitempty"`
+}
+
+func (image MyAppImage) String() string {
+	return fmt.Sprintf("%s:%s", image.Repository, image.Tag)
 }
 
 type MyAppUI struct {

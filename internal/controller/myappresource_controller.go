@@ -58,7 +58,7 @@ func (r *MyAppResourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	redisSvcLookupKey := types.NamespacedName{
-		Name:      myApp.Name + "-redis",
+		Name:      "redis",
 		Namespace: myApp.Namespace,
 	}
 	var currentRedisSvc corev1.Service
@@ -226,7 +226,7 @@ func buildRedisService(myAppRec *myappv1alpha1.MyAppResource) *corev1.Service {
 			APIVersion: corev1.SchemeGroupVersion.Version,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      myAppRec.Name + "-redis",
+			Name:      "redis",
 			Namespace: myAppRec.Namespace,
 			Labels: map[string]string{
 				wdk.App: wdk.MyApp,
@@ -329,7 +329,7 @@ func buildPodInfo(myAppRec *myappv1alpha1.MyAppResource, redisIP string) *appsv1
 					Containers: []corev1.Container{
 						{
 							Name:  "podinfo",
-							Image: fmt.Sprintf("%s:%s", myAppRec.Spec.Image.Repository, myAppRec.Spec.Image.Tag),
+							Image: myAppRec.Spec.Image.String(),
 							Command: []string{
 								"./podinfo",
 								"--port=8080",
